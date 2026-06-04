@@ -32,7 +32,13 @@ import {
   quaternionFromForwardUp,
   shouldRenderFaceNormal,
 } from "./camera";
-import { Point, classifyTwistTurn, dragDeltaToCameraRotation } from "./input";
+import {
+  Point,
+  classifyTwistTurn,
+  dragDeltaToCameraRotation,
+  shouldEnableTwistGestures,
+  toolbarActionToTurnDirection,
+} from "./input";
 import {
   WALL_BACKDROP_RENDER_ORDER,
   createRoundedStickerGeometry,
@@ -74,6 +80,13 @@ interface PointerDragState {
 
 interface TrackpadGestureEvent extends Event {
   rotation: number;
+}
+
+function getTwistGestureEnvironment() {
+  return {
+    coarsePointer: window.matchMedia?.("(pointer: coarse)").matches ?? false,
+    maxTouchPoints: navigator.maxTouchPoints ?? 0,
+  };
 }
 
 const FACE_DISTANCE = 1.58;
@@ -334,15 +347,17 @@ export class RubiksEversionGame {
     this.canvas.addEventListener("pointercancel", () => {
       this.pointerDrag = null;
     });
-    this.canvas.addEventListener("gesturestart", (event) =>
-      this.onGestureStart(event as TrackpadGestureEvent),
-    );
-    this.canvas.addEventListener("gesturechange", (event) =>
-      this.onGestureChange(event as TrackpadGestureEvent),
-    );
-    this.canvas.addEventListener("gestureend", (event) =>
-      this.onGestureEnd(event as TrackpadGestureEvent),
-    );
+    if (shouldEnableTwistGestures(getTwistGestureEnvironment())) {
+      this.canvas.addEventListener("gesturestart", (event) =>
+        this.onGestureStart(event as TrackpadGestureEvent),
+      );
+      this.canvas.addEventListener("gesturechange", (event) =>
+        this.onGestureChange(event as TrackpadGestureEvent),
+      );
+      this.canvas.addEventListener("gestureend", (event) =>
+        this.onGestureEnd(event as TrackpadGestureEvent),
+      );
+    }
 
     this.root.addEventListener("click", (event) => {
       const target = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
@@ -433,8 +448,8 @@ export class RubiksEversionGame {
   }
 
   private onAction(action: string): void {
-    if (action === "clockwise") this.startFaceTurn("clockwise");
-    if (action === "counterClockwise") this.startFaceTurn("counterClockwise");
+    const turnDirection = toolbarActionToTurnDirection(action);
+    if (turnDirection) this.startFaceTurn(turnDirection);
     if (action === "undo") this.undo();
     if (action === "scramble") this.scramble();
     if (action === "reset") this.reset();

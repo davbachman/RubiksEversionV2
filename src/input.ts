@@ -10,6 +10,11 @@ export interface CameraRotationDelta {
   pitch: number;
 }
 
+export interface TwistGestureEnvironment {
+  coarsePointer: boolean;
+  maxTouchPoints: number;
+}
+
 export function dragDeltaToCameraRotation(
   start: Point,
   end: Point,
@@ -30,4 +35,14 @@ export function classifyTwistTurn(
 ): TurnDirection | null {
   if (Math.abs(rotationDegrees) < threshold) return null;
   return rotationDegrees > 0 ? "counterClockwise" : "clockwise";
+}
+
+export function shouldEnableTwistGestures(environment: TwistGestureEnvironment): boolean {
+  return !(environment.coarsePointer && environment.maxTouchPoints > 0);
+}
+
+export function toolbarActionToTurnDirection(action: string): TurnDirection | null {
+  if (action === "clockwise") return "counterClockwise";
+  if (action === "counterClockwise") return "clockwise";
+  return null;
 }

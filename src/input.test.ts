@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { classifyTwistTurn, dragDeltaToCameraRotation } from "./input";
+import {
+  classifyTwistTurn,
+  dragDeltaToCameraRotation,
+  shouldEnableTwistGestures,
+  toolbarActionToTurnDirection,
+} from "./input";
 
 describe("input gestures", () => {
   it("converts click-drag movement to camera rotation deltas", () => {
@@ -20,5 +25,19 @@ describe("input gestures", () => {
   it("ignores small accidental twist rotation", () => {
     expect(classifyTwistTurn(12)).toBeNull();
     expect(classifyTwistTurn(-12)).toBeNull();
+  });
+
+  it("disables twist gestures on coarse mobile touch devices", () => {
+    expect(shouldEnableTwistGestures({ coarsePointer: true, maxTouchPoints: 5 })).toBe(false);
+  });
+
+  it("keeps twist gestures available for desktop trackpads", () => {
+    expect(shouldEnableTwistGestures({ coarsePointer: false, maxTouchPoints: 0 })).toBe(true);
+  });
+
+  it("maps toolbar twist buttons to the visual turn direction", () => {
+    expect(toolbarActionToTurnDirection("clockwise")).toBe("counterClockwise");
+    expect(toolbarActionToTurnDirection("counterClockwise")).toBe("clockwise");
+    expect(toolbarActionToTurnDirection("reset")).toBeNull();
   });
 });
