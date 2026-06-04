@@ -16,3 +16,16 @@ Verification notes:
 - npm run build passed.
 - develop-web-game Playwright smoke run passed without console errors.
 - Direct Playwright checks passed for wheel snapping, click-drag clockwise face turn, scramble, reset, and undo.
+
+Iteration notes, 2026-06-04:
+- Changed local controls so one-finger click-drag rotates the camera/view around the cube center and snaps to the nearest orthogonal face on release.
+- Added support for Safari/WebKit-style trackpad twist gesture events to rotate the viewed face; horizontal wheel input remains as a browser-testable fallback because most browsers do not expose true trackpad rotation events.
+- Widened the inside-cube FOV on desktop and portrait viewports.
+- Verified locally with npm run test, npm run build, the develop-web-game smoke client, direct Playwright click-drag/twist checks, and desktop/mobile screenshots under output/web-game/iterate-*.
+- Fixed reversed local rotation directions: rightward click-drag now snaps toward the right face, and positive twist rotation now maps to counter-clockwise face turns. Re-verified with npm run test, npm run build, and direct Playwright state/screenshot checks under output/web-game/reversed-fixed/.
+- Moved the camera 0.62 units backward from its current viewing direction while keeping it inside the cube. `render_game_to_text()` now includes `cameraPosition`; front view reports `[0,0,-0.62]`, and right view reports `[-0.62,0,0]`. Re-verified with npm run test, npm run build, web-game smoke screenshots, and direct Playwright checks under output/web-game/camera-back*.
+- Changed snapping to preserve camera roll: after one-finger drag, the forward vector snaps to the nearest face normal, but the view no longer rolls so the face sides become parallel to the screen. Verified with npm run test, npm run build, and direct Playwright diagonal-drag check under output/web-game/roll-preserve/.
+- Moved the camera outside the cube at 2.35 units behind the viewed direction and hid the nearest wall/sticker face so the player sees back into the hollow cube without the outside wall occluding the view. Added text-state fields for `hiddenFaceNormal` and reduced rendered facelets. Re-verified with npm run test, npm run build, and Playwright screenshots under output/web-game/outside-camera-*.
+- Re-tuned the outside-camera FOV to a more natural profile: 86 degrees on desktop, 98 degrees on square-ish screens, and 112 degrees on portrait screens. Verified desktop and mobile screenshots under output/web-game/fov-natural-*.
+- Fixed face-turn corner clipping by making black wall backdrops non-depth-writing backgrounds rendered behind sticker meshes. Fixed sticker planes still depth-occlude rotating stickers, but the whole black wall no longer acts as an abrupt clipping mask. Verified mid-turn screenshots under output/web-game/face-turn-depth-fix/.
+- Filleted sticker corners by replacing square sticker planes with a shared rounded-rectangle ShapeGeometry. Verified static and mid-turn screenshots under output/web-game/rounded-stickers/.

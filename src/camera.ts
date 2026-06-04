@@ -1,6 +1,9 @@
 import { Matrix4, Quaternion, Vector3 } from "three";
 import type { ActiveFace } from "./cube";
 
+export const CUBE_WALL_DISTANCE = 1.58;
+export const CAMERA_BACK_OFFSET = 2.35;
+
 export interface SnapOrientation {
   face: ActiveFace;
   upKey: string;
@@ -26,6 +29,11 @@ function roundAxisVector(vector: Vector3): Vector3 {
   return new Vector3(Math.round(vector.x), Math.round(vector.y), Math.round(vector.z));
 }
 
+function cleanFloat(value: number): number {
+  const rounded = Number(value.toFixed(6));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
 export function quaternionFromForwardUp(forward: Vector3, up: Vector3): Quaternion {
   const normalizedForward = forward.clone().normalize();
   const normalizedUp = up.clone().normalize();
@@ -45,6 +53,18 @@ export function forwardAndUpFromQuaternion(quaternion: Quaternion): {
     forward: roundAxisVector(new Vector3(0, 0, -1).applyQuaternion(quaternion)),
     up: roundAxisVector(new Vector3(0, 1, 0).applyQuaternion(quaternion)),
   };
+}
+
+export function computeBackedOffCameraPosition(
+  quaternion: Quaternion,
+  offset = CAMERA_BACK_OFFSET,
+): Vector3 {
+  const forward = new Vector3(0, 0, -1).applyQuaternion(quaternion).normalize();
+  return forward.multiplyScalar(-offset).set(
+    cleanFloat(forward.x),
+    cleanFloat(forward.y),
+    cleanFloat(forward.z),
+  );
 }
 
 export function createSnapOrientations(): SnapOrientation[] {
@@ -83,6 +103,29 @@ export function findNearestSnapOrientation(quaternion: Quaternion): SnapOrientat
   return best;
 }
 
+export function findNearestFaceSnapOrientation(quaternion: Quaternion): SnapOrientation {
+  const forward = new Vector3(0, 0, -1).applyQuaternion(quaternion).normalize();
+  const up = new Vector3(0, 1, 0).applyQuaternion(quaternion).normalize();
+  const face = getActiveFaceFromForward(forward);
+  const snappedForward = AXIS_DIRECTIONS.find((direction) => direction.face === face);
+  if (!snappedForward) throw new Error(`No snap axis for face ${face}`);
+
+  const projectedUp = up
+    .clone()
+    .sub(snappedForward.vector.clone().multiplyScalar(up.dot(snappedForward.vector)));
+  const preservedUp = projectedUp.lengthSq() > 0.000001
+    ? projectedUp.normalize()
+    : fallbackUpForForward(snappedForward.vector);
+
+  return {
+    face,
+    upKey: "preserved",
+    forward: snappedForward.vector.clone(),
+    up: preservedUp,
+    quaternion: quaternionFromForwardUp(snappedForward.vector, preservedUp),
+  };
+}
+
 export function getActiveFaceFromForward(forward: Vector3): ActiveFace {
   const absX = Math.abs(forward.x);
   const absY = Math.abs(forward.y);
@@ -93,3 +136,21 @@ export function getActiveFaceFromForward(forward: Vector3): ActiveFace {
   return forward.z >= 0 ? "front" : "back";
 }
 
+export function getHiddenFaceNormalFromForward(forward: Vector3): Vector3 {
+  const face = getActiveFaceFromForward(forward);
+  const faceDirection = AXIS_DIRECTIONS.find((direction) => direction.face === face);
+  if (!faceDirection) throw new Error(`No axis direction for face ${face}`);
+
+  const hidden = faceDirection.vector.clone().multiplyScalar(-1);
+  return new Vector3(cleanFloat(hidden.x), cleanFloat(hidden.y), cleanFloat(hidden.z));
+}
+
+export function shouldRenderFaceNormal(forward: Vector3, normal: Vector3): boolean {
+  const hiddenNormal = getHiddenFaceNormalFromForward(forward);
+  return normal.clone().normalize().dot(hiddenNormal) < 0.95;
+}
+
+function fallbackUpForForward(forward: Vector3): Vector3 {
+  if (Math.abs(forward.y) > 0.9) return new Vector3(0, 0, -Math.sign(forward.y));
+  return new Vector3(0, 1, 0);
+}

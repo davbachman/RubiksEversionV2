@@ -5,17 +5,29 @@ export interface Point {
   y: number;
 }
 
-export function classifySwipeTurn(
+export interface CameraRotationDelta {
+  yaw: number;
+  pitch: number;
+}
+
+export function dragDeltaToCameraRotation(
   start: Point,
   end: Point,
-  threshold = 48,
-): TurnDirection | null {
+  sensitivity = 0.004,
+): CameraRotationDelta {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
 
-  if (Math.abs(dx) < threshold) return null;
-  if (Math.abs(dx) < Math.abs(dy) * 1.4) return null;
-
-  return dx > 0 ? "clockwise" : "counterClockwise";
+  return {
+    yaw: Number((dx * sensitivity).toFixed(6)),
+    pitch: Number((dy * sensitivity).toFixed(6)),
+  };
 }
 
+export function classifyTwistTurn(
+  rotationDegrees: number,
+  threshold = 22,
+): TurnDirection | null {
+  if (Math.abs(rotationDegrees) < threshold) return null;
+  return rotationDegrees > 0 ? "counterClockwise" : "clockwise";
+}

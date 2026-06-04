@@ -1,18 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { classifySwipeTurn } from "./input";
+import { classifyTwistTurn, dragDeltaToCameraRotation } from "./input";
 
 describe("input gestures", () => {
-  it("maps a right click-drag swipe to clockwise", () => {
-    expect(classifySwipeTurn({ x: 100, y: 100 }, { x: 176, y: 112 })).toBe("clockwise");
+  it("converts click-drag movement to camera rotation deltas", () => {
+    expect(dragDeltaToCameraRotation({ x: 100, y: 100 }, { x: 176, y: 112 })).toEqual({
+      yaw: 0.304,
+      pitch: 0.048,
+    });
   });
 
-  it("maps a left click-drag swipe to counter-clockwise", () => {
-    expect(classifySwipeTurn({ x: 176, y: 100 }, { x: 100, y: 112 })).toBe("counterClockwise");
+  it("maps clockwise twist rotation to a counter-clockwise face turn", () => {
+    expect(classifyTwistTurn(28)).toBe("counterClockwise");
   });
 
-  it("ignores short or mostly vertical drags", () => {
-    expect(classifySwipeTurn({ x: 100, y: 100 }, { x: 126, y: 103 })).toBeNull();
-    expect(classifySwipeTurn({ x: 100, y: 100 }, { x: 132, y: 190 })).toBeNull();
+  it("maps counter-clockwise twist rotation to a clockwise face turn", () => {
+    expect(classifyTwistTurn(-28)).toBe("clockwise");
+  });
+
+  it("ignores small accidental twist rotation", () => {
+    expect(classifyTwistTurn(12)).toBeNull();
+    expect(classifyTwistTurn(-12)).toBeNull();
   });
 });
-

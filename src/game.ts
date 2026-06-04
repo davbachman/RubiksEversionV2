@@ -24,12 +24,20 @@ import {
 } from "./cube";
 import {
   SnapOrientation,
-  findNearestSnapOrientation,
+  computeBackedOffCameraPosition,
+  findNearestFaceSnapOrientation,
   forwardAndUpFromQuaternion,
+  getHiddenFaceNormalFromForward,
   getActiveFaceFromForward,
   quaternionFromForwardUp,
+  shouldRenderFaceNormal,
 } from "./camera";
-import { classifySwipeTurn, Point } from "./input";
+import { Point, classifyTwistTurn, dragDeltaToCameraRotation } from "./input";
+import {
+  WALL_BACKDROP_RENDER_ORDER,
+  createRoundedStickerGeometry,
+  createWallBackdropMaterial,
+} from "./rendering";
 import { computeInsideCubeFov } from "./viewport";
 
 type IconNode = Parameters<typeof createElement>[0];
@@ -50,8 +58,22 @@ interface SnapAnimation {
 }
 
 interface StickerMesh {
-  mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  mesh: Mesh<ReturnType<typeof createRoundedStickerGeometry>, MeshBasicMaterial>;
   color: string;
+}
+
+interface WallMesh {
+  mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  normal: Vector3;
+}
+
+interface PointerDragState {
+  last: Point;
+  didRotate: boolean;
+}
+
+interface TrackpadGestureEvent extends Event {
+  rotation: number;
 }
 
 const FACE_DISTANCE = 1.58;
@@ -128,8 +150,9 @@ export class RubiksEversionGame {
   private readonly camera: PerspectiveCamera;
   private readonly renderer: WebGLRenderer;
   private readonly canvas: HTMLCanvasElement;
-  private readonly stickerGeometry: PlaneGeometry;
+  private readonly stickerGeometry: ReturnType<typeof createRoundedStickerGeometry>;
   private readonly stickerMeshes = new Map<string, StickerMesh>();
+  private readonly wallMeshes: WallMesh[] = [];
   private readonly moveCountElement: HTMLElement;
   private readonly faceElement: HTMLElement;
   private readonly buttons: HTMLButtonElement[] = [];
@@ -137,7 +160,8 @@ export class RubiksEversionGame {
   private snapDelayRemaining = 0;
   private snapAnimation: SnapAnimation | null = null;
   private turnAnimation: TurnAnimation | null = null;
-  private pointerStart: Point | null = null;
+  private pointerDrag: PointerDragState | null = null;
+  private gestureStartRotation: number | null = null;
   private lastFrameTime = 0;
   private animationFrame = 0;
 
@@ -147,10 +171,10 @@ export class RubiksEversionGame {
     this.scene = new Scene();
     this.scene.background = new Color("#111418");
     this.camera = new PerspectiveCamera(102, 1, 0.01, 50);
-    this.camera.position.set(0, 0, 0);
     this.camera.quaternion.copy(
       quaternionFromForwardUp(new Vector3(0, 0, 1), new Vector3(0, 1, 0)),
     );
+    this.updateCameraPosition();
 
     const shell = document.createElement("div");
     shell.className = "app-shell";
@@ -191,7 +215,7 @@ export class RubiksEversionGame {
 
     this.renderer = new WebGLRenderer({ canvas: this.canvas, antialias: true });
     this.renderer.setClearColor("#111418", 1);
-    this.stickerGeometry = new PlaneGeometry(STICKER_SIZE, STICKER_SIZE);
+    this.stickerGeometry = createRoundedStickerGeometry(STICKER_SIZE);
 
     this.createWalls();
     this.bindEvents();
@@ -227,7 +251,11 @@ export class RubiksEversionGame {
   }
 
   renderGameToText(): string {
+    const exactForward = this.getCameraForward();
     const directions = forwardAndUpFromQuaternion(this.camera.quaternion);
+    const exactUp = new Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const hiddenFaceNormal = getHiddenFaceNormalFromForward(exactForward);
+    const renderedFacelets = this.getRenderableFacelets(exactForward);
     const cubies = this.cube.cubies.map((cubie) => ({
       id: cubie.id,
       p: [cubie.position.x, cubie.position.y, cubie.position.z],
@@ -243,23 +271,40 @@ export class RubiksEversionGame {
       coordinateSystem:
         "Origin is the viewer at cube center. +X right, +Y top, +Z front. Camera forward points toward the viewed wall.",
       activeFace: this.activeFace,
+      cameraPosition: [
+        Number(this.camera.position.x.toFixed(3)),
+        Number(this.camera.position.y.toFixed(3)),
+        Number(this.camera.position.z.toFixed(3)),
+      ],
       cameraForward: axisArray(directions.forward),
       cameraUp: axisArray(directions.up),
+      cameraForwardExact: [
+        Number(exactForward.x.toFixed(3)),
+        Number(exactForward.y.toFixed(3)),
+        Number(exactForward.z.toFixed(3)),
+      ],
+      cameraUpExact: [
+        Number(exactUp.x.toFixed(3)),
+        Number(exactUp.y.toFixed(3)),
+        Number(exactUp.z.toFixed(3)),
+      ],
+      hiddenFaceNormal: [
+        Number(hiddenFaceNormal.x.toFixed(0)),
+        Number(hiddenFaceNormal.y.toFixed(0)),
+        Number(hiddenFaceNormal.z.toFixed(0)),
+      ],
       moveCount: this.cube.moveCount,
       isAnimating: this.isAnimating(),
       lastMove: this.cube.lastMove,
       isSolved: this.cube.isSolved(),
-      visibleFacelets: getVisibleFacelets(this.cube).length,
+      visibleFacelets: renderedFacelets.length,
       cubies,
     });
   }
 
   private createWalls(): void {
     const wallGeometry = new PlaneGeometry(WALL_SIZE, WALL_SIZE);
-    const wallMaterial = new MeshBasicMaterial({
-      color: "#151515",
-      side: DoubleSide,
-    });
+    const wallMaterial = createWallBackdropMaterial();
     const normals = [
       new Vector3(1, 0, 0),
       new Vector3(-1, 0, 0),
@@ -274,6 +319,8 @@ export class RubiksEversionGame {
       const wall = new Mesh(wallGeometry, wallMaterial);
       wall.position.copy(normal.clone().multiplyScalar(FACE_DISTANCE));
       wall.quaternion.copy(basis.quaternion);
+      wall.renderOrder = WALL_BACKDROP_RENDER_ORDER;
+      this.wallMeshes.push({ mesh: wall, normal: normal.clone() });
       this.scene.add(wall);
     }
   }
@@ -282,10 +329,20 @@ export class RubiksEversionGame {
     window.addEventListener("resize", () => this.resize());
     this.canvas.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
     this.canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
+    this.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
     this.canvas.addEventListener("pointercancel", () => {
-      this.pointerStart = null;
+      this.pointerDrag = null;
     });
+    this.canvas.addEventListener("gesturestart", (event) =>
+      this.onGestureStart(event as TrackpadGestureEvent),
+    );
+    this.canvas.addEventListener("gesturechange", (event) =>
+      this.onGestureChange(event as TrackpadGestureEvent),
+    );
+    this.canvas.addEventListener("gestureend", (event) =>
+      this.onGestureEnd(event as TrackpadGestureEvent),
+    );
 
     this.root.addEventListener("click", (event) => {
       const target = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action]");
@@ -305,43 +362,74 @@ export class RubiksEversionGame {
 
   private onWheel(event: WheelEvent): void {
     event.preventDefault();
-    if (this.turnAnimation) return;
+    if (this.isAnimating()) return;
 
-    this.snapAnimation = null;
-    this.snapDelayRemaining = SNAP_DELAY_MS;
+    const dominantHorizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 1.35;
+    if (!dominantHorizontal) return;
 
-    const sensitivity = 0.0024;
-    const clampedX = Math.max(-80, Math.min(80, event.deltaX));
-    const clampedY = Math.max(-80, Math.min(80, event.deltaY));
-    const current = this.camera.quaternion.clone();
-    const up = new Vector3(0, 1, 0).applyQuaternion(current).normalize();
-    const right = new Vector3(1, 0, 0).applyQuaternion(current).normalize();
-    const yaw = new Quaternion().setFromAxisAngle(up, -clampedX * sensitivity);
-    const pitch = new Quaternion().setFromAxisAngle(right, -clampedY * sensitivity);
-
-    this.camera.quaternion.premultiply(yaw).premultiply(pitch).normalize();
-    this.activeFace = getActiveFaceFromForward(
-      new Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion),
-    );
-    this.render();
+    const direction = classifyTwistTurn(event.deltaX, 34);
+    if (direction) this.startFaceTurn(direction);
   }
 
   private onPointerDown(event: PointerEvent): void {
     if (event.button !== 0) return;
-    this.pointerStart = { x: event.clientX, y: event.clientY };
+    if (this.turnAnimation) return;
+
+    this.snapAnimation = null;
+    this.snapDelayRemaining = 0;
+    this.pointerDrag = {
+      last: { x: event.clientX, y: event.clientY },
+      didRotate: false,
+    };
     this.canvas.setPointerCapture(event.pointerId);
   }
 
+  private onPointerMove(event: PointerEvent): void {
+    if (!this.pointerDrag) return;
+    if ((event.buttons & 1) !== 1) return;
+
+    event.preventDefault();
+    const next = { x: event.clientX, y: event.clientY };
+    const delta = dragDeltaToCameraRotation(this.pointerDrag.last, next);
+    const moved = Math.abs(delta.yaw) + Math.abs(delta.pitch) > 0.0001;
+
+    if (moved) {
+      this.rotateCamera(delta.yaw, delta.pitch);
+      this.pointerDrag.didRotate = true;
+      this.pointerDrag.last = next;
+    }
+  }
+
   private onPointerUp(event: PointerEvent): void {
-    if (!this.pointerStart) return;
+    const didRotate = this.pointerDrag?.didRotate ?? false;
+    this.pointerDrag = null;
 
-    const direction = classifySwipeTurn(this.pointerStart, {
-      x: event.clientX,
-      y: event.clientY,
-    });
-    this.pointerStart = null;
+    if (this.canvas.hasPointerCapture(event.pointerId)) {
+      this.canvas.releasePointerCapture(event.pointerId);
+    }
 
-    if (direction) this.startFaceTurn(direction);
+    if (didRotate && !this.snapAnimation) this.startSnap();
+  }
+
+  private onGestureStart(event: TrackpadGestureEvent): void {
+    event.preventDefault();
+    this.gestureStartRotation = event.rotation;
+  }
+
+  private onGestureChange(event: TrackpadGestureEvent): void {
+    event.preventDefault();
+    if (this.gestureStartRotation === null || this.isAnimating()) return;
+
+    const direction = classifyTwistTurn(event.rotation - this.gestureStartRotation);
+    if (!direction) return;
+
+    this.gestureStartRotation = event.rotation;
+    this.startFaceTurn(direction);
+  }
+
+  private onGestureEnd(event: TrackpadGestureEvent): void {
+    event.preventDefault();
+    this.gestureStartRotation = null;
   }
 
   private onAction(action: string): void {
@@ -402,6 +490,21 @@ export class RubiksEversionGame {
     this.render();
   }
 
+  private rotateCamera(yawRadians: number, pitchRadians: number): void {
+    const current = this.camera.quaternion.clone();
+    const up = new Vector3(0, 1, 0).applyQuaternion(current).normalize();
+    const right = new Vector3(1, 0, 0).applyQuaternion(current).normalize();
+    const yaw = new Quaternion().setFromAxisAngle(up, yawRadians);
+    const pitch = new Quaternion().setFromAxisAngle(right, pitchRadians);
+
+    this.camera.quaternion.premultiply(yaw).premultiply(pitch).normalize();
+    this.updateCameraPosition();
+    this.activeFace = getActiveFaceFromForward(
+      new Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion),
+    );
+    this.render();
+  }
+
   private update(deltaMs: number): void {
     if (this.snapDelayRemaining > 0) {
       this.snapDelayRemaining -= deltaMs;
@@ -416,9 +519,11 @@ export class RubiksEversionGame {
         this.snapAnimation.to,
         progress,
       );
+      this.updateCameraPosition();
 
       if (progress >= 1) {
         this.camera.quaternion.copy(this.snapAnimation.to);
+        this.updateCameraPosition();
         this.activeFace = this.snapAnimation.target.face;
         this.snapAnimation = null;
       }
@@ -437,7 +542,7 @@ export class RubiksEversionGame {
   }
 
   private startSnap(): void {
-    const target = findNearestSnapOrientation(this.camera.quaternion);
+    const target = findNearestFaceSnapOrientation(this.camera.quaternion);
     this.snapAnimation = {
       from: this.camera.quaternion.clone(),
       to: target.quaternion.clone(),
@@ -447,14 +552,19 @@ export class RubiksEversionGame {
     };
   }
 
+  private updateCameraPosition(): void {
+    this.camera.position.copy(computeBackedOffCameraPosition(this.camera.quaternion));
+  }
+
   private render(): void {
+    this.updateWallVisibility();
     this.placeStickers();
     this.updateHud();
     this.renderer.render(this.scene, this.camera);
   }
 
   private placeStickers(): void {
-    const visible = getVisibleFacelets(this.cube);
+    const visible = this.getRenderableFacelets();
     const visibleIds = new Set<string>();
 
     for (const facelet of visible) {
@@ -506,6 +616,24 @@ export class RubiksEversionGame {
     }
   }
 
+  private getRenderableFacelets(forward = this.getCameraForward()) {
+    return getVisibleFacelets(this.cube).filter((facelet) =>
+      shouldRenderFaceNormal(forward, vectorFromGrid(facelet.normal)),
+    );
+  }
+
+  private updateWallVisibility(): void {
+    const forward = this.getCameraForward();
+
+    for (const wall of this.wallMeshes) {
+      wall.mesh.visible = shouldRenderFaceNormal(forward, wall.normal);
+    }
+  }
+
+  private getCameraForward(): Vector3 {
+    return new Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+  }
+
   private getTurnQuaternion(position: { x: number; y: number; z: number }): Quaternion | null {
     if (!this.turnAnimation) return null;
 
@@ -537,4 +665,3 @@ export class RubiksEversionGame {
     return Boolean(this.turnAnimation || this.snapAnimation || this.snapDelayRemaining > 0);
   }
 }
-
